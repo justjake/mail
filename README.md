@@ -41,14 +41,17 @@ Zurb Foundation.
 
 ## Design
 
-URLS:
+URLs:
 
-    /mailboxes/:mbox_name/
-    /mailboxes/:mbox_name/:message_identifier
+    /                                           # welcome, authenticate
+    /mailboxes                                  # list mailboxes
+    /mailboxes/:mbox_name/                      # list messages
+    /mailboxes/:mbox_name/:message_identifier   # read message
+    ?json                                       # same thing but in JSON
 
 Configuration:
 
-    MaildirRoot = ~/mail
+    MaildirRoot      = ~/mail
     HashedPassword   = asdkfjasdfasdfasdf
     MessagesPerView  = 40
     MarkRead         = True
