@@ -3,7 +3,7 @@
 It's Programmer Law that everyone must write a mail client. This is
 mine.
 
-A maildir reader, for the web, in Go & Coffeescript.
+An imap client, for the web.
 
 ## server design
 
