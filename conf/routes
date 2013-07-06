@@ -6,6 +6,22 @@ module:testrunner
 
 GET     /                                       App.Index
 
+# log in + authentication
+GET     /session                                Session.Status
+POST    /session/new                            Session.New
+POST    /session/destroy                        Session.Destroy
+
+# connect to an IMAP server
+GET     /servers                                Servers.Index
+POST    /servers/dial                           Servers.Dial
+POST    /session/close                          Servers.Close
+
+# query mailboxes on a server
+GET     /mail                                   Mailboxes.Index
+GET     /mail/:box                              Mailboxes.Show
+# get messages from a mailbox 
+GET     /mail/:box/:message                     Message.Show
+
 # Ignore favicon requests
 GET     /favicon.ico                            404
 
