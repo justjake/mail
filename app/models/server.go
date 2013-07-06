@@ -6,7 +6,6 @@ package models
 import (
     "code.google.com/p/go-imap/go1/imap"
     "time"
-    "fmt"
     "log"
 )
 
@@ -32,7 +31,7 @@ type Server struct {
 func (s *Server) Connect() (*imap.Client, error) {
     // re-use existing connection
     if s.client != nil {
-        s.disconnectTimer.Reset()
+        s.disconnectTimer.Reset(NoUsageDisconnect)
         return s.client, nil
     }
 
@@ -67,20 +66,22 @@ func (s *Server) Connect() (*imap.Client, error) {
         s.Close()
     })
 
-    return client, nil
+    return c, nil
 }
 
 func (s *Server) Close() (error) {
+    // stop timer and nil it
+    if s.disconnectTimer != nil {
+        s.disconnectTimer.Stop()
+        s.disconnectTimer = nil
+    }
+
+    // close server connection
     if s.client != nil {
         _, err := s.client.Logout(ServerLogoutPause)
+        s.client = nil
         return err
     }
-    s.client = nil
+
     return nil
-
-}
-
-// list the mailboxes on the server
-func (s *Server) Mailboxes ([]string, error) {
-    return nil, fmt.Errorf("not yet implemented")
 }
