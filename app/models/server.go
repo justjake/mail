@@ -1,9 +1,9 @@
-// Per-user database
+// the business of email is this package's business
 package models
 
-// nice imap library
-// http://godoc.org/code.google.com/p/go-imap/go1/imap
 import (
+    // nice imap library
+    // http://godoc.org/code.google.com/p/go-imap/go1/imap
     "code.google.com/p/go-imap/go1/imap"
     "time"
     "log"
