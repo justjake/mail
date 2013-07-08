@@ -3,16 +3,24 @@ package main
 
 import (
     "fmt"
+
+    // my code
     _ "github.com/justjake/mail/app/models"
+    "github.com/justjake/mail/app/assets"
+
     "code.google.com/p/gopass"
     "code.google.com/p/go-imap/go1/imap"
     "time"
     "net/mail"
     "bytes"
     "os"
+    
+    // cert stuff. fuck this
+    "crypto/x509"
+    "crypto/tls"
 )
 
-const Hostname   = "localhost"
+const Hostname   = "hal.rescomp.berkeley.edu"
 const Username   = "jitl@rescomp.berkeley.edu"
 const SessionKey = "jake"
 
@@ -47,6 +55,18 @@ func fatal(zone string, err error) {
     }
 }
 
+func tls_config() *tls.Config {
+    rescomp_cert_bytes := assets.LoadRescompCA()
+
+    cert, err := x509.ParseCertificate(rescomp_cert_bytes)
+    fatal("ca cert parse", err)
+
+    pool := x509.NewCertPool()
+    pool.AddCert(cert)
+
+    return &tls.Config{ RootCAs: pool }
+}
+
 func main() {
     //
     // Note: most of error handling code is omitted for brevity
@@ -60,7 +80,7 @@ func main() {
     Password, _ := gopass.GetPass("IMAP password> ")
 
     // Connect to the server
-    c, err := imap.DialTLS(Hostname, nil)
+    c, err := imap.DialTLS(Hostname, tls_config())
     fatal("dial", err)
 
 
