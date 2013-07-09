@@ -77,10 +77,23 @@ func main() {
     msgs, err := spam.Update()
     fatal("update spam", err)
 
+    var lastMsg *models.Message
     for e := msgs.Front(); e != nil; e = e.Next() {
         // operate on e.Value
         message := e.Value.(*models.Message)
         fmt.Printf("Subject: %s\n", message.Header.Get("Subject"))
+        lastMsg = message
+    }
+
+    // retrieve and print body of final msg
+    _, err = lastMsg.RetrieveBody(false)
+    fatal("get body", err)
+
+    parts, err := lastMsg.GetParts()
+    fatal("get parts", err)
+
+    for i, p := range parts {
+        fmt.Printf("Number: %d\nContent-Type: %s\n\n%s", i, p.MimeType, string(p.Data))
     }
 
     // close connection
