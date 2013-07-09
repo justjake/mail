@@ -11,16 +11,18 @@ written with
 [Revel](http://robfig.github.io/revel/manual/organization.html), a
 Hacker News darling framework.
 
-Single-user, hardcoded username/password hash authentication.
+Uses simple, in-memory data structures for session persistence.
 
-Should be comfortable running on an NFS-mounted homedir with longish
-lookup times -- we musn't be writing any sort of files!
-
-leave room for expanded functionality in the future. 
-
+Layers of abstraction, so far
+    
+                Server       Mailbox       Message
+   models:   ----------------------------------------
+                   imap.Client        tls.Config    
+    
+    
 ## Client design
 
-Mobile-first design.
+Mobile-first design, relying on Zurb Foundation with SCSS for styling.
 
 Coffeescript.
 
@@ -29,7 +31,7 @@ Front-end JS frameworks ideas:
 - aura.js :: http://aurajs.github.io/aura/
 - Polymer if I'm feeling especially futuristic
 
-Widgets:
+possible compnents/widgets:
     
     - Mailbox preview widget
     - Message widget
@@ -37,26 +39,7 @@ Widgets:
         - message footer
         - message body
 
-Zurb Foundation.
-
-## Design
-
-URLs:
-
-    /                                           # welcome, authenticate
-    /mailboxes                                  # list mailboxes
-    /mailboxes/:mbox_name/                      # list messages
-    /mailboxes/:mbox_name/:message_identifier   # read message
-    ?json                                       # same thing but in JSON
-
-Configuration:
-
-    MaildirRoot      = ~/mail
-    HashedPassword   = asdkfjasdfasdfasdf
-    MessagesPerView  = 40
-    MarkRead         = True
-    
-Future TODOs:
+## Future TODOs
 
 - use notmuch for message indexing, search, and tags: ::
   http://notmuchmail.org/
