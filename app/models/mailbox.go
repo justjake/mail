@@ -3,7 +3,6 @@ package models
 import (
     "code.google.com/p/go-imap/go1/imap"
     "net/mail"
-    "container/list"
     "bytes"
     "io"
     "io/ioutil"
@@ -15,28 +14,32 @@ import (
 // vinod has suggested always using UIDs.
 // so we'll do that
 type Mailbox struct {
-    server      *Server
-    messageUIDs *list.List // uint32
+    server        *Server
+    latestMessage uint32
 
     Name string
     Messages map[uint32]*Message
 }
 
+// create a new Mailbox model
+func NewMailbox(name string, server *Server) *Mailbox {
+    return &Mailbox{
+        server: server,
+        latestMessage: 1,
+        Name: name,
+        Messages: make(map[uint32]*Message),
+    }
+}
+
 // gets all the messages on the server since the last message in the list
-func (m *Mailbox) Update() (newMessages *list.List /* *Message */, err error) {
+func (m *Mailbox) Update() (newMessages []*Message, err error) {
     c, err := m.server.Connect()
     if err != nil { return nil, err }
 
     // sync imap command to select the mailbox for actions
     c.Select(m.Name, true)
 
-    var lastHad uint32
-    last := m.messageUIDs.Back()
-    if last == nil {
-        lastHad = 1
-    } else {
-        lastHad = last.Value.(uint32)
-    }
+    lastHad := m.latestMessage
 
     // retrieve items
     wanted := fmt.Sprintf("%d:*", lastHad)
@@ -46,7 +49,7 @@ func (m *Mailbox) Update() (newMessages *list.List /* *Message */, err error) {
     if err != nil { return nil, err }
 
     // result
-    newMessages = list.New()
+    newMessages = make([]*Message, 1, 5)
 
     for cmd.InProgress() {
         // Wait for the next response (no timeout)
@@ -67,7 +70,7 @@ func (m *Mailbox) Update() (newMessages *list.List /* *Message */, err error) {
                 if msg, _ := mail.ReadMessage(bytes.NewReader(header)); msg != nil {
                     // we could read the message and retrieve the UID
                     // so this is valid to push into our storage system
-                    m.messageUIDs.PushBack(info.UID)
+                    m.latestMessage = info.UID
                     my_msg := &Message{
                         server: m.server,
                         mailbox: m,
@@ -76,7 +79,7 @@ func (m *Mailbox) Update() (newMessages *list.List /* *Message */, err error) {
                     }
 
                     // store
-                    newMessages.PushBack(my_msg)
+                    newMessages = append(newMessages, my_msg)
                     m.Messages[info.UID] = my_msg
                 } else {
                     fmt.Printf("mail.ReadMessage failed on UID %d\n", info.UID)
@@ -107,9 +110,6 @@ type Message struct {
     Body      []*Part      // populated with MIB body sections or just
                            // body text
 }
-
-
-
 
 // messages are usually created with just header information
 // this method downloads the actual body of the message from the server,

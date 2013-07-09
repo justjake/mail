@@ -8,7 +8,7 @@ import (
     "time"
     "log"
     "crypto/tls"
-    "container/list"
+    "fmt"
 )
 
 ///////// server ///////////
@@ -70,6 +70,9 @@ func (s *Server) Connect() (*imap.Client, error) {
             s.Close()
             return nil, err
         }
+    } else {
+        s.Close()
+        return nil, fmt.Errorf("expected imap.Login state, instead was %v.", c.State())
     }
 
     // auto-disconnect after a certain timeout
@@ -145,13 +148,7 @@ func (s *Server) GetMailboxes() (boxes []*Mailbox, err error) {
 
     for i, rsp := range cmd.Data {
         info := rsp.MailboxInfo()
-        mbox := &Mailbox{
-            Name: info.Name,
-            Messages: make(map[uint32]*Message),
-
-            server: s,
-            messageUIDs: list.New(),
-        }
+        mbox := NewMailbox(info.Name, s)
         boxes[i] = mbox
         s.Mailboxes[mbox.Name] = mbox
     }
