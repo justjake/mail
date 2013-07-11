@@ -4,10 +4,7 @@ import (
     "code.google.com/p/go-imap/go1/imap"
     "net/mail"
     "bytes"
-    "io"
-    "io/ioutil"
     "fmt"
-    "mime/multipart"
 )
 
 // mailbox + message, ties back to server\
@@ -18,7 +15,7 @@ type Mailbox struct {
     latestMessage uint32
 
     Name string
-    Messages map[uint32]*Message
+    Mail map[uint32]*Email
 }
 
 // create a new Mailbox model
@@ -27,12 +24,12 @@ func NewMailbox(name string, server *Server) *Mailbox {
         server: server,
         latestMessage: 1,
         Name: name,
-        Messages: make(map[uint32]*Message),
+        Mail: make(map[uint32]*Email),
     }
 }
 
 // gets all the messages on the server since the last message in the list
-func (m *Mailbox) Update() (newMessages []*Message, err error) {
+func (m *Mailbox) Update() (newMail []*Email, err error) {
     c, err := m.server.Connect()
     if err != nil { return nil, err }
 
@@ -49,7 +46,7 @@ func (m *Mailbox) Update() (newMessages []*Message, err error) {
     if err != nil { return nil, err }
 
     // result
-    newMessages = make([]*Message, 1, 5)
+    newMail = make([]*Email, 0, 5)
 
     for cmd.InProgress() {
         // Wait for the next response (no timeout)
@@ -71,16 +68,22 @@ func (m *Mailbox) Update() (newMessages []*Message, err error) {
                     // we could read the message and retrieve the UID
                     // so this is valid to push into our storage system
                     m.latestMessage = info.UID
-                    my_msg := &Message{
+
+                    my_msg := &MessageNode{
+                        Header: msg.Header,
+                        ContentType: msg.Header.Get(ContentType),
+                    }
+
+                    email := &Email {
                         server: m.server,
                         mailbox: m,
                         UID: info.UID,
-                        Header: msg.Header,
+                        Message: my_msg,
                     }
 
                     // store
-                    newMessages = append(newMessages, my_msg)
-                    m.Messages[info.UID] = my_msg
+                    newMail = append(newMail, email)
+                    m.Mail[info.UID] = email
                 } else {
                     fmt.Printf("mail.ReadMessage failed on UID %d\n", info.UID)
                 }
@@ -93,31 +96,41 @@ func (m *Mailbox) Update() (newMessages []*Message, err error) {
         cmd.Data = nil
     }
 
-    return newMessages, nil
+    return newMail, nil
 }
 
 
 ///////////////////////////////////////////////////////////////////////////////
-// Mesage
 // represents a single email
-type Message struct {
+type Email struct {
     UID       uint32
     server    *Server
     mailbox   *Mailbox
-    Header    mail.Header
-    BodyData  []byte    `json:"-"` // field ignored in JSON -- use Body
-                                   // instead
-    Body      []*Part      // populated with MIB body sections or just
-                           // body text
+    Message   *MessageNode
+    bodyData  []byte
 }
+
+// Issue a FETCH request for this message
+// TODO make private, this is an abstraction-breaker
+func (m *Email) RetrieveRaw(requestType string) (cmd *imap.Command, err error) {
+    c, err := m.server.Connect()
+    if err != nil { return }
+
+    // fetch message by UID
+    set, err := imap.NewSeqSet(fmt.Sprintf("%d", m.UID))
+    if err != nil { return }
+    cmd, err = c.UIDFetch(set, requestType)
+    return cmd, err
+}
+
 
 // messages are usually created with just header information
 // this method downloads the actual body of the message from the server,
 // optionally marking the message as '\Seen', in IMAP terms.
-func (m *Message) RetrieveBody(setRead bool) (body []byte, err error) {
+func (m *Email) Body(setRead bool) (body []byte, err error) {
     // cache
-    if m.BodyData != nil {
-        return m.BodyData, nil
+    if m.bodyData != nil {
+        return m.bodyData, nil
     }
 
     // what will our FETCH request?
@@ -128,73 +141,34 @@ func (m *Message) RetrieveBody(setRead bool) (body []byte, err error) {
         requestType = "BODY.PEEK[TEXT]"
     }
 
-
-    c, err := m.server.Connect()
+    cmd, err := m.RetrieveRaw(requestType)
+    cmd, err = imap.Wait(cmd, err)
     if err != nil { return }
 
-    // fetch message by UID
-    set, err := imap.NewSeqSet(fmt.Sprintf("%d", m.UID))
-    if err != nil { return }
-    cmd, err := imap.Wait(c.UIDFetch(set, requestType))
-    if err != nil { return }
-
-    // save response data to struct
-    rsp := cmd.Data[0]
-    info := rsp.MessageInfo()
-    m.BodyData = imap.AsBytes(info.Attrs["BODY[TEXT]"])
-    return m.BodyData, nil
-}
-
-///////////////////////////////////////////////////////////////////////////////
-// Part
-// basically an atattchment in the email
-type Part struct {
-    MimeType string
-    Data     []byte
+    info := cmd.Data[0].MessageInfo()
+    m.bodyData = imap.AsBytes(info.Attrs["BODY[TEXT]"])
+    return m.bodyData, nil
 }
 
 // parse the raw RFC822.BODY bytes into seperate attatchment pieces
 // if the body is not a multi-part body, this will still return a
 // lenght-one slice of parts.
 // this is how you get parts.
-func (m *Message) GetParts() (parts []*Part, err error) {
+func (m *Email) ParseBody() (*MessageNode, error) {
     // can't parse the body unless we have it
-    if m.BodyData == nil {
+    if m.bodyData == nil {
         return nil, fmt.Errorf("Cannot parse nil body")
     }
 
-    content_type := m.Header.Get("Content-Type")
-    boundry := m.Header.Get("boundry")
-
-    // only parse multipart/alternative types
-    if content_type == "multipart/alternative" {
-        if boundry == "" {
-            return nil, fmt.Errorf("Boundry was an empty string")
+    node, err := DataToNode(bytes.NewBuffer(m.bodyData))
+    if err != nil {
+        if _, ok := err.(ChildError); ok {
+            // mostly-good node, keep it
+            m.Message = node
+            return node, err
         }
-
-        rdr := multipart.NewReader(bytes.NewReader(m.BodyData), boundry)
-        parts := make([]*Part, 2)
-
-        // loop until we reach the end of the multi-part message
-        for part, err := rdr.NextPart(); err != io.EOF; part, err = rdr.NextPart() {
-            if err != nil {
-                return parts, fmt.Errorf("Error while parsing multipart mail: %v", err)
-            }
-
-            // read all of the part's body data into data
-            data, err := ioutil.ReadAll(part)
-            if err != nil { return parts, err }
-
-            // save everything in the part
-            my_part := &Part{part.Header.Get("Content-Type"), data }
-            parts = append(parts, my_part)
-        }
-        return parts, nil
+        return nil, err
     }
 
-    // base case: not a multipart message
-    // still, read the body as a byte array and encode its content-type
-    if content_type == "" { content_type = "text/plain" }
-    singular_part := &Part{content_type, m.BodyData}
-    return []*Part{singular_part}, nil
+    return node, nil
 }

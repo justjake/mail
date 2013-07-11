@@ -1,5 +1,5 @@
 // mail utilities
-package util
+package models
 
 // this file wants to recursivley parse RFC 2046 messages
 
@@ -8,7 +8,7 @@ import (
     "regexp"
     "mime"
     "mime/multipart"
-    "net/textproto"
+    "net/mail"
     "io"
     "bytes"
     "strings"
@@ -26,21 +26,6 @@ func IsMultipartType(content_type string) bool {
     return MultipartRegex.MatchString(mt)
 }
 
-type MessageNode struct {
-    // the MIME content-type of this part.
-    // When content-type is a mutlipart type, the message node's
-    // Children field will be populated
-    ContentType string
-    Header      textproto.MIMEHeader
-
-    // child message nodes, if this message node was a 'multipart' message
-    Children    []*MessageNode
-    // contains data only if we could not derive Children
-    Body        io.Reader
-}
-
-const childErrorIndent = "  |  "
-type ChildError map[*MessageNode]error
 // Prints a pretty little table of the errors, like so:
 // 
 //  Errors [2] encountered while converting children:
@@ -48,6 +33,8 @@ type ChildError map[*MessageNode]error
 //    |  Errors [1] encountered while converting children:
 //    |    |  Aborted Multipart#NextPart at error: <pointer goes here>
 //
+type ChildError map[*MessageNode]error
+const childErrorIndent = "  |  "
 func (oops ChildError) Error() string {
     ret := fmt.Sprintf("Errors [%d] encountered while converting children:\n", len(oops))
     sub_errors := make([]string, len(oops))
@@ -64,7 +51,6 @@ func (oops ChildError) Error() string {
     return ret + strings.Join(sub_errors, "\n")
 }
 
-
 // subtly duplicate a reader if you're worried
 // use the `use_instead` reader for your dangerous operation
 // if things go wrong, you have the `backup` to return to.
@@ -79,12 +65,35 @@ func backupReader(in_danger io.Reader) (use_instead io.Reader, backup io.Reader)
 }
 
 
+// a tree structure of MIME multipart messages
+type MessageNode struct {
+    // the MIME content-type of this part.
+    // When content-type is a mutlipart type, the message node's
+    // Children field will be populated
+    ContentType string
+    Header      mail.Header
+
+    // child message nodes, if this message node was a 'multipart' message
+    Children    []*MessageNode
+    // contains data only if we could not derive Children
+    // its nil in the best cases <3
+    Body        io.Reader
+}
+
+// convert what we expect to be the RFC 5322 data
+func DataToNode(data io.Reader) (*MessageNode, error) {
+    msg, err := mail.ReadMessage(data)
+    if err != nil { return nil, err }
+
+    return MessageToNode(msg)
+}
+
 // recursivley parse a multipart.Part 
-func PartToNode(part *multipart.Part) (*MessageNode, error) {
+func MessageToNode(msg *mail.Message) (*MessageNode, error) {
     node := &MessageNode{
-        ContentType: part.Header.Get(ContentType),
-        Header: part.Header,
-        Body: part,
+        ContentType: msg.Header.Get(ContentType),
+        Header: msg.Header,
+        Body: msg.Body,
     }
 
     if IsMultipartType(node.ContentType) {
@@ -95,11 +104,11 @@ func PartToNode(part *multipart.Part) (*MessageNode, error) {
         }
 
         // checkpoint our reader
-        partData, backup := backupReader(part)
+        body, backup := backupReader(msg.Body)
         node.Body = backup
 
         // parse the data as a multipart!
-        multi := multipart.NewReader(partData, boundry)
+        multi := multipart.NewReader(body, boundry)
         parts := make([]*multipart.Part, 0, 5)
         var err error
         var sub_part  *multipart.Part
@@ -118,8 +127,12 @@ func PartToNode(part *multipart.Part) (*MessageNode, error) {
         child_errs := make(ChildError)
         node.Children  = make([]*MessageNode, len(parts))
 
-        for i, sub_part := range parts {
-            node.Children[i], err = PartToNode(sub_part)
+        for i, part := range parts {
+            sub_msg := &mail.Message {
+                Header: mail.Header(part.Header),
+                Body:   part,
+            }
+            node.Children[i], err = MessageToNode(sub_msg)
             // store any errors
             if err != nil {
                 child_err_occured = true
