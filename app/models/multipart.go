@@ -72,6 +72,7 @@ type MessageNode struct {
     // When content-type is a mutlipart type, the message node's
     // Children field will be populated
     ContentType string
+    ContentTypeParams map[string]string
     Header      mail.Header
 
     // child message nodes, if this message node was a 'multipart' message
@@ -123,65 +124,116 @@ func DataToNode(data io.Reader) (*MessageNode, error) {
     return MessageToNode(msg)
 }
 
+// run a function on each element in this tree
+func (node *MessageNode) ForEach(f func(*MessageNode)) {
+    f(node)
+    if node.Children != nil {
+        for _, child := range node.Children {
+            child.ForEach(f)
+        }
+    }
+}
+
+// determine via MIME type if a MessageNode is binary or not
+var TextMimeTypes = map[string]bool{
+    "application/json":         true,
+    "application/javascript":   true,
+    "application/pgp-signature": true, // normal text around Base64 signature block
+}
+var StartsWithText = regexp.MustCompilePOSIX("^text/")
+func IsText(node *MessageNode) bool {
+    res := false
+
+    // ContentType based detection
+    mt, params := node.ContentType, node.ContentTypeParams
+    // check for charset param
+    // it there's a charset, it must be text
+    if _, ok := params["charset"]; ok { res = true }
+
+    // if it starts with text...
+    if StartsWithText.MatchString(mt) { res = true }
+
+    // know text types
+    if _, ok := TextMimeTypes[mt]; ok { res = true }
+
+    // ContentEncoding based detection
+    // TODO
+
+    debug("is IsText text? ", mt, ": ", res)
+    return res
+}
+
 // recursivley parse a multipart.Part 
 // will always return a *MessageNode, even on encountering errors. You will need
 // good switching code to work with message nodes
 // If errors occur whilst creating the sub-tree, such errors will be 
 // returned in a ChildError mapping. You may ignore such errors for the most
 func MessageToNode(msg *mail.Message) (*MessageNode, error) {
+
     debug("starting message to node for message: ", msg)
     body, backup := backupReader(msg.Body)
+
     node := &MessageNode{
-        ContentType: msg.Header.Get(ContentType),
         Header: msg.Header,
         Body: backup,
     }
 
-    // TODO: boundry is a paramter of the Content-Type field
-    // reevaluate everythign
-    if boundry, ok := MultipartType(node.ContentType); ok {
-        // parse the data as a multipart!
-        multi := multipart.NewReader(body, boundry)
-        child_err_occured := false
-        child_errs := make(ChildError)
-        node.Children = make([]*MessageNode, 0, 5)
-        // read new Parts off the multipart parser
-        for part, err := multi.NextPart(); err != io.EOF; part, err = multi.NextPart() {
-            // check errors
-            if err != nil {
-                debug("error occured while making part: ", part, " error: ", err)
-                // restore backup and abort parsing
-                return node, fmt.Errorf("Aborted Multipart#NextPart at error: %v", err)
+    ct, params, err := mime.ParseMediaType(msg.Header.Get(ContentType))
+
+    if err == nil {
+        node.ContentType = ct
+        node.ContentTypeParams = params
+        if boundry, ok := params[Boundary]; ok {
+            // parse the data as a multipart!
+
+            multi := multipart.NewReader(body, boundry)
+            child_err_occured := false
+            child_errs := make(ChildError)
+            node.Children = make([]*MessageNode, 0, 5)
+
+            // read new Parts off the multipart parser
+            for part, err := multi.NextPart(); err != io.EOF; part, err = multi.NextPart() {
+                // check errors
+                if err != nil {
+                    debug("error occured while making part: ", part, " error: ", err)
+                    // restore backup and abort parsing
+                    return node, fmt.Errorf("Aborted Multipart#NextPart at error: %v", err)
+                }
+
+                // create message so we can recurse
+                sub_msg := &mail.Message {
+                    Header: mail.Header(part.Header),
+                    Body:   NewMarshalReader(part),
+                }
+
+                // create child node
+                child, err := MessageToNode(sub_msg)
+
+                // store any errors
+                if err != nil {
+                    child_err_occured = true
+                    child_errs[child] = err
+                }
+
+                // store child
+                node.Children = append(node.Children, child)
+            } // end enumerate parts
+
+            // don't need this data anymore, since we have the children
+            node.Body = nil
+
+            if child_err_occured {
+                return node, child_errs
             }
+        } // end has-boundry-parse-sections
+    } // end decoded-mime-type
 
-            // create message so we can recurse
-            sub_msg := &mail.Message {
-                Header: mail.Header(part.Header),
-                Body:   NewMarshalReader(part),
-            }
-
-            // create child node
-            child, err := MessageToNode(sub_msg)
-
-            // store any errors
-            if err != nil {
-                child_err_occured = true
-                child_errs[child] = err
-            }
-
-            // store child
-            node.Children = append(node.Children, child)
-        }
-
-        // don't need this data anymore, since we have the children
-        node.Body = nil
-
-        if child_err_occured {
-            return node, child_errs
-        }
-    } else {
-        debug("boundry: ok:", boundry, ok)
+    if node.Body != nil {
+        // make sure body has text export type
+        // so the browser doesn't have to do MIME detection
+        node.Body.MarshalAsString = IsText(node)
     }
-
     return node, nil
 }
+
+
