@@ -15,10 +15,12 @@ Uses simple, in-memory data structures for session persistence.
 
 Layers of abstraction, so far
     
-                Server       Mailbox       Message
-   models:   ----------------------------------------
+                 Server       Mailbox       Message
+    models:   ----------------------------------------
                    imap.Client        tls.Config    
     
+We can leverage the first-party crypto extension library `go.crypto` for
+[PGP support](http://godoc.org/code.google.com/p/go.crypto/openpgp)
     
 ## Client design
 
