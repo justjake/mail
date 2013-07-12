@@ -10,20 +10,34 @@ import (
     "mime/multipart"
     "net/mail"
     "io"
-    "bytes"
     "strings"
 )
 
+const debug_mode = true
+func debug(msgs... interface{}) {
+    if debug_mode {
+        fmt.Println(msgs...)
+    }
+}
+
+// MIME header name to detect MIME Content-Type
 const ContentType    = "Content-Type"
-const Boundry        = "Boundry"
+// MIME header name to retrieve mime/multipart boundry strings
+const Boundary        = "boundary"
+// MIME type of multipart messages
 const TypeMultipart  = "multipart"
+// Regexp that matches MIME multipart MIME types
 var   MultipartRegex = regexp.MustCompile("^"+TypeMultipart)
 
 // is a raw content-type string a multipart message?
-func IsMultipartType(content_type string) bool {
-    mt, _, err := mime.ParseMediaType(content_type)
-    if err != nil { return false }
-    return MultipartRegex.MatchString(mt)
+func MultipartType(content_type string) (boundry string, ok bool) {
+    mt, params, err := mime.ParseMediaType(content_type)
+    if err != nil { return "", false }
+    if MultipartRegex.MatchString(mt) {
+        boundry, ok = params[Boundary]
+        return
+    }
+    return "", false
 }
 
 // Prints a pretty little table of the errors, like so:
@@ -34,7 +48,7 @@ func IsMultipartType(content_type string) bool {
 //    |    |  Aborted Multipart#NextPart at error: <pointer goes here>
 //
 type ChildError map[*MessageNode]error
-const childErrorIndent = "  |  "
+const childIndent= "  |  "
 func (oops ChildError) Error() string {
     ret := fmt.Sprintf("Errors [%d] encountered while converting children:\n", len(oops))
     sub_errors := make([]string, len(oops))
@@ -43,25 +57,12 @@ func (oops ChildError) Error() string {
         // indent child errors
         lines := strings.Split(err.Error(), "\n")
         for i, line := range lines {
-            lines[i] = childErrorIndent + line
+            lines[i] = childIndent + line
         }
         sub_errors[j] = strings.Join(lines, "\n")
         j++
     }
     return ret + strings.Join(sub_errors, "\n")
-}
-
-// subtly duplicate a reader if you're worried
-// use the `use_instead` reader for your dangerous operation
-// if things go wrong, you have the `backup` to return to.
-func backupReader(in_danger io.Reader) (use_instead io.Reader, backup io.Reader) {
-    var already_read *bytes.Buffer
-
-    // already_read = f - unread
-    // backup = already_read + unread
-    use_instead = io.TeeReader(in_danger, already_read)
-    backup = io.MultiReader(already_read, in_danger)
-    return use_instead, backup
 }
 
 
@@ -77,8 +78,42 @@ type MessageNode struct {
     Children    []*MessageNode
     // contains data only if we could not derive Children
     // its nil in the best cases <3
-    Body        io.Reader
+    Body        *MarshalReader
 }
+
+// nice to-string for debugging
+const sectionSep = "----"
+func (node *MessageNode) StringIndent(indent string) string {
+
+    // new-line seperated k: v header list
+    header := make([]string, len(node.Header)+2)
+    header[0] = indent + sectionSep
+    header[len(header) - 1] = indent + sectionSep
+    i := 1
+    for k, v := range node.Header {
+        header[i] = fmt.Sprintf("%s: %v", indent + k, v)
+        i++
+    }
+
+    if node.Children != nil {
+        // recurse simialar for child nodes
+        bodies := make([]string, len(node.Children) + 1)
+        for i, child := range node.Children {
+            bodies[i] = child.StringIndent(indent + childIndent)
+        }
+        return strings.Join(append(header, bodies...), "\n")
+    } else {
+        // 
+        bodyData, err := node.Body.Data()
+        if err != nil {
+            debug("issue in stringIndent: error occured when doing bodyData: ", err)
+        }
+        bodyString := indent + strings.Replace(string(bodyData), "\n", "\n" + indent, -1)
+        return strings.Join(header, "\n") + "\n" + bodyString
+    }
+    return strings.Join(header, "\n")
+}
+
 
 // convert what we expect to be the RFC 5322 data
 func DataToNode(data io.Reader) (*MessageNode, error) {
@@ -89,55 +124,53 @@ func DataToNode(data io.Reader) (*MessageNode, error) {
 }
 
 // recursivley parse a multipart.Part 
+// will always return a *MessageNode, even on encountering errors. You will need
+// good switching code to work with message nodes
+// If errors occur whilst creating the sub-tree, such errors will be 
+// returned in a ChildError mapping. You may ignore such errors for the most
 func MessageToNode(msg *mail.Message) (*MessageNode, error) {
+    debug("starting message to node for message: ", msg)
+    body, backup := backupReader(msg.Body)
     node := &MessageNode{
         ContentType: msg.Header.Get(ContentType),
         Header: msg.Header,
-        Body: msg.Body,
+        Body: backup,
     }
 
-    if IsMultipartType(node.ContentType) {
-        boundry := node.Header.Get(Boundry)
-        if boundry == "" {
-            // nothing more to do, but invalid ContentType
-            return node, fmt.Errorf("No boundry given for TypeMultipart %s", node.ContentType)
-        }
-
-        // checkpoint our reader
-        body, backup := backupReader(msg.Body)
-        node.Body = backup
-
+    // TODO: boundry is a paramter of the Content-Type field
+    // reevaluate everythign
+    if boundry, ok := MultipartType(node.ContentType); ok {
         // parse the data as a multipart!
         multi := multipart.NewReader(body, boundry)
-        parts := make([]*multipart.Part, 0, 5)
-        var err error
-        var sub_part  *multipart.Part
-        // read new Parts off the multipart parser
-        for err = nil; err != io.EOF; sub_part, err = multi.NextPart() {
-            if err != nil {
-                // restore backup and abort parsing
-                node.Body = backup
-                return node, fmt.Errorf("Aborted Multipart#NextPart at error: %v", err)
-            }
-            parts = append(parts, sub_part)
-        }
-
-        // recurse nodes
         child_err_occured := false
         child_errs := make(ChildError)
-        node.Children  = make([]*MessageNode, len(parts))
+        node.Children = make([]*MessageNode, 0, 5)
+        // read new Parts off the multipart parser
+        for part, err := multi.NextPart(); err != io.EOF; part, err = multi.NextPart() {
+            // check errors
+            if err != nil {
+                debug("error occured while making part: ", part, " error: ", err)
+                // restore backup and abort parsing
+                return node, fmt.Errorf("Aborted Multipart#NextPart at error: %v", err)
+            }
 
-        for i, part := range parts {
+            // create message so we can recurse
             sub_msg := &mail.Message {
                 Header: mail.Header(part.Header),
-                Body:   part,
+                Body:   NewMarshalReader(part),
             }
-            node.Children[i], err = MessageToNode(sub_msg)
+
+            // create child node
+            child, err := MessageToNode(sub_msg)
+
             // store any errors
             if err != nil {
                 child_err_occured = true
-                child_errs[node.Children[i]] = err
+                child_errs[child] = err
             }
+
+            // store child
+            node.Children = append(node.Children, child)
         }
 
         // don't need this data anymore, since we have the children
@@ -146,6 +179,9 @@ func MessageToNode(msg *mail.Message) (*MessageNode, error) {
         if child_err_occured {
             return node, child_errs
         }
+    } else {
+        debug("boundry: ok:", boundry, ok)
     }
+
     return node, nil
 }

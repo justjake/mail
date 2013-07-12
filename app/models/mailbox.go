@@ -160,7 +160,12 @@ func (m *Email) ParseBody() (*MessageNode, error) {
         return nil, fmt.Errorf("Cannot parse nil body")
     }
 
-    node, err := DataToNode(bytes.NewBuffer(m.bodyData))
+    msg := &mail.Message {
+        Header: m.Message.Header,
+        Body: bytes.NewReader(m.bodyData),
+    }
+
+    node, err := MessageToNode(msg)
     if err != nil {
         if _, ok := err.(ChildError); ok {
             // mostly-good node, keep it
