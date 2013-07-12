@@ -17,7 +17,7 @@ import (
 type MarshalReader struct {
     reader io.Reader
     data []byte
-    MarshalAsBytes bool
+    MarshalAsString bool
 
 }
 
@@ -39,12 +39,13 @@ func (mr *MarshalReader) MarshalJSON() ([]byte, error) {
     data, err := mr.Data()
     if err != nil { return nil, err }
 
-    // it *could* be serialized as bytes as well!
-    if mr.MarshalAsBytes {
-        return json.Marshal(data)
+    // Serialize as string regular text 
+    if mr.MarshalAsString {
+        return json.Marshal(string(data))
     }
 
-    return json.Marshal(string(data))
+    // serialize byte data as Base64 json string
+    return json.Marshal(data)
 }
 
 // implement io.Reader
@@ -54,17 +55,9 @@ func (mr *MarshalReader) Read(p []byte) (int, error) {
 
 // Create a new MarshalReader from a regular reader
 func NewMarshalReader(r io.Reader) *MarshalReader {
-    data, _ := ioutil.ReadAll(r)
-    // fmt.Printf("NewMarshalReader, data: %v\n", string(data))
-    mr := &MarshalReader{
-        reader: bytes.NewReader(data),
-        data: data,
-        MarshalAsBytes: true,
+    return &MarshalReader{
+        reader: r,
     }
-
-    // data, err := mr.Data()
-    // debug("new marshal reader, data: ", string(data), " err: ", err)
-    return mr
 }
 
 
